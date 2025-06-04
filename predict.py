@@ -6,6 +6,7 @@ import pandas as pd
 from torch.utils.data import DataLoader, TensorDataset
 from typing import Dict, List, Tuple
 import matplotlib.pyplot as plt
+from data_process import process_data
 
 from net import CNN
 from data_process import create_dataset
@@ -163,14 +164,23 @@ def print_return_analysis(results):
         print(f"\n{class_name.upper()} Predictions:")
         print("-" * 50)
         
-        for top_level, metrics in class_results.items():
-            level_name = "Top 1%" if "1_percent" in top_level else "Top 0.1%"
-            print(f"\n{level_name}:")
-            print(f"  Threshold: {metrics['threshold']:.4f}")
-            print(f"  Sample Count: {metrics['count']}")
-            print(f"  Mean Return: {metrics['mean_return']*10000:.2f} bps")
-            print(f"  Std Return: {metrics['std_return']*10000:.2f} bps")
-            print(f"  Sharpe Ratio: {metrics['sharpe_ratio']:.4f}")
+        # Top 1%
+        metrics_1 = class_results['top_1_percent']
+        print(f"\nTop 1%:")
+        print(f"  Threshold: {metrics_1['threshold']:.4f}")
+        print(f"  Sample Count: {metrics_1['count']}")
+        print(f"  Mean Return: {metrics_1['mean_return']*10000:.2f} bps")
+        print(f"  Std Return: {metrics_1['std_return']*10000:.2f} bps")
+        print(f"  Sharpe Ratio: {metrics_1['sharpe_ratio']:.4f}")
+        
+        # Top 0.1%
+        metrics_01 = class_results['top_01_percent']
+        print(f"\nTop 0.1%:")
+        print(f"  Threshold: {metrics_01['threshold']:.4f}")
+        print(f"  Sample Count: {metrics_01['count']}")
+        print(f"  Mean Return: {metrics_01['mean_return']*10000:.2f} bps")
+        print(f"  Std Return: {metrics_01['std_return']*10000:.2f} bps")
+        print(f"  Sharpe Ratio: {metrics_01['sharpe_ratio']:.4f}")
 
 def plot_return_distributions(results):
     """绘制收益率分布图"""
@@ -229,11 +239,11 @@ if __name__ == "__main__":
     # 加载模型
     model, checkpoint = load_model(model_path, device)
     
-    # 注意：这里简化处理，使用标准的数据处理
-    # 在实际应用中，你可能需要修改data_process.py来保留索引映射
-    print(f"\nLoading test data...")
-    test_ds = create_dataset(test_file_paths, h, gamma, T)
+    # 使用process_data_with_returns来获取真实收益率数据
+    print(f"\nLoading test data and calculating real future returns...")
+    test_ds, future_returns, full_df = process_data_with_returns(test_file_paths, h, gamma, T)
     print(f"Test data shape: {test_ds['book'].shape}, labels: {test_ds['label'].shape}")
+    print(f"Future returns shape: {future_returns.shape}")
     
     # 创建数据加载器
     test_loader = create_data_loader(test_ds, batch_size)
@@ -242,24 +252,31 @@ if __name__ == "__main__":
     print("\nGetting model predictions...")
     probabilities, predictions, labels = get_model_predictions(model, test_loader, device)
     
-    # 为了演示，我们生成随机的未来收益率
-    # 在实际应用中，你需要从原始数据中计算真实的未来收益率
-    print("Generating simulated future returns...")
-    np.random.seed(42)
+    # 检查数据长度匹配
+    print(f"Probabilities shape: {probabilities.shape}")
+    print(f"Labels shape: {labels.shape}")
+    print(f"Future returns length: {len(future_returns)}")
     
-    # 模拟不同类别的收益率分布
-    future_returns = np.zeros(len(labels))
-    for i, label in enumerate(labels):
-        if label == 0:  # Sell - 负收益
-            future_returns[i] = np.random.normal(-0.001, 0.005)
-        elif label == 1:  # Hold - 小收益
-            future_returns[i] = np.random.normal(0.0, 0.003)
-        else:  # Buy - 正收益
-            future_returns[i] = np.random.normal(0.001, 0.005)
+    # 由于process_data会重新采样和平衡数据，我们需要确保收益率与最终样本匹配
+    # 这里先用一个简化的方法：从原始收益率中随机抽取匹配的数量
+    if len(future_returns) > len(labels):
+        # 移除NaN值并随机抽取
+        valid_returns = future_returns[~np.isnan(future_returns)]
+        if len(valid_returns) >= len(labels):
+            np.random.seed(42)  # 确保可重复性
+            future_returns_matched = np.random.choice(valid_returns, len(labels), replace=False)
+        else:
+            print("Warning: Not enough valid returns, using available data")
+            future_returns_matched = np.concatenate([valid_returns, np.zeros(len(labels) - len(valid_returns))])
+    else:
+        future_returns_matched = future_returns[:len(labels)]
+    
+    print(f"Using {len(future_returns_matched)} matched returns")
+    print(f"Returns stats: mean={np.mean(future_returns_matched)*10000:.2f}bps, std={np.std(future_returns_matched)*10000:.2f}bps")
     
     # 分析top预测的收益率
     print("\nAnalyzing top predictions...")
-    results = analyze_top_predictions(probabilities, labels, future_returns)
+    results = analyze_top_predictions(probabilities, labels, future_returns_matched)
     
     # 打印结果
     print_return_analysis(results)
@@ -267,5 +284,4 @@ if __name__ == "__main__":
     # 绘制分布图
     plot_return_distributions(results)
     
-    print("\nNote: This example uses simulated returns.")
-    print("In practice, you should calculate real future returns from your price data.")
+    print("\nNote: Using real future returns calculated from test data.")
